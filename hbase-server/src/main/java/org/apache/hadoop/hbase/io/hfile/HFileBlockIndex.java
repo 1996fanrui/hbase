@@ -116,6 +116,7 @@ public class HFileBlockIndex {
    * An implementation of the BlockIndexReader that deals with block keys which are plain
    * byte[] like MetaBlock or the Bloom Block for ROW bloom.
    * Does not need a comparator. It can work on Bytes.BYTES_RAWCOMPARATOR
+   * 应用于 MetaBlock 或 Bloom Block
    */
    static class ByteArrayKeyBlockIndexReader extends BlockIndexReader {
 
@@ -230,6 +231,7 @@ public class HFileBlockIndex {
    * An implementation of the BlockIndexReader that deals with block keys which are the key
    * part of a cell like the Data block index or the ROW_COL bloom blocks
    * This needs a comparator to work with the Cells
+   * 应用于 Data Block
    */
   static class CellBasedKeyBlockIndexReader extends BlockIndexReader {
 
@@ -280,6 +282,7 @@ public class HFileBlockIndex {
         boolean cacheBlocks, boolean pread, boolean isCompaction,
         DataBlockEncoding expectedDataBlockEncoding,
         CachingBlockReader cachingBlockReader) throws IOException {
+      // 根据 key 在 root 索引节点查找对应的 Index Block（二分查找）
       int rootLevelIndex = rootBlockContainingKey(key);
       if (rootLevelIndex < 0 || rootLevelIndex >= blockOffsets.length) {
         return null;
@@ -288,6 +291,7 @@ public class HFileBlockIndex {
       // the next indexed key
       Cell nextIndexedKey = null;
 
+      // 读取 索引中 DataBlock 的 offset 和 size
       // Read the next-level (intermediate or leaf) index block.
       long currentOffset = blockOffsets[rootLevelIndex];
       int currentOnDiskSize = blockDataSizes[rootLevelIndex];
@@ -303,12 +307,14 @@ public class HFileBlockIndex {
 
       HFileBlock block = null;
       KeyOnlyKeyValue tmpNextIndexKV = new KeyValue.KeyOnlyKeyValue();
+      // while 循环是为了找指定的 DataBlock
       while (true) {
         try {
           // Must initialize it with null here, because if don't and once an exception happen in
           // readBlock, then we'll release the previous assigned block twice in the finally block.
           // (See HBASE-22422)
           block = null;
+          // 第一次进来以后，currentBlock.getOffset() == currentOffset，表示当前处理 rootBlock
           if (currentBlock != null && currentBlock.getOffset() == currentOffset) {
             // Avoid reading the same block again, even with caching turned off.
             // This is crucial for compaction-type workload which might have
@@ -318,7 +324,9 @@ public class HFileBlockIndex {
           } else {
             // Call HFile's caching block reader API. We always cache index
             // blocks, otherwise we might get terrible performance.
+            // 索引层必须 Cache
             boolean shouldCache = cacheBlocks || (lookupLevel < searchTreeLevel);
+            // 判断当前是 哪层的 Block，Index 还是 Data，具体哪种 Index
             BlockType expectedBlockType;
             if (lookupLevel < searchTreeLevel - 1) {
               expectedBlockType = BlockType.INTERMEDIATE_INDEX;
@@ -328,6 +336,7 @@ public class HFileBlockIndex {
               // this also accounts for ENCODED_DATA
               expectedBlockType = BlockType.DATA;
             }
+            // 真正地读 MetaBlock 或 DataBlock
             block = cachingBlockReader.readBlock(currentOffset, currentOnDiskSize, shouldCache,
               pread, isCompaction, true, expectedBlockType, expectedDataBlockEncoding);
           }
@@ -352,6 +361,7 @@ public class HFileBlockIndex {
           // Locate the entry corresponding to the given key in the non-root
           // (leaf or intermediate-level) index block.
           ByteBuff buffer = block.getBufferWithoutHeader();
+          // 非 root 的 index 情况下，找 key 的位置
           index = locateNonRootIndexEntry(buffer, key, comparator);
           if (index == -1) {
             // This has to be changed
@@ -734,6 +744,7 @@ public class HFileBlockIndex {
       while (low <= high) {
         mid = low + ((high - low) >> 1);
 
+        // todo 获取当前 Index Entry 的 offset
         // Midkey's offset relative to the end of secondary index
         int midKeyRelOffset = nonRootIndex.getIntAfterPosition(Bytes.SIZEOF_INT * (mid + 1));
 
@@ -745,6 +756,8 @@ public class HFileBlockIndex {
         // We subtract the two consecutive secondary index elements, which
         // gives us the size of the whole (offset, onDiskSize, key) tuple. We
         // then need to subtract the overhead of offset and onDiskSize.
+        // todo 获取下一个 Index Entry 的 offset，减去当前 Index Entry 的 offset 就是当前 IndexEntry 的 length
+        //  为什么这里耗时比 compare 严重？
         int midLength = nonRootIndex.getIntAfterPosition(Bytes.SIZEOF_INT * (mid + 2)) -
             midKeyRelOffset - SECONDARY_INDEX_ENTRY_OVERHEAD;
 
@@ -753,8 +766,10 @@ public class HFileBlockIndex {
         // TODO make KeyOnlyKeyValue to be Buffer backed and avoid array() call. This has to be
         // done after HBASE-12224 & HBASE-12282
         // TODO avoid array call.
+        // todo 为什么这里耗时比 compare 严重
         nonRootIndex.asSubByteBuffer(midKeyOffset, midLength, pair);
         nonRootIndexkeyOnlyKV.setKey(pair.getFirst(), pair.getSecond(), midLength);
+        // 对要查找的 key 和 索引中的 key 进行对比
         int cmp = PrivateCellUtil.compareKeyIgnoresMvcc(comparator, key, nonRootIndexkeyOnlyKV);
 
         // key lives above the midpoint
@@ -806,6 +821,7 @@ public class HFileBlockIndex {
      */
     static int locateNonRootIndexEntry(ByteBuff nonRootBlock, Cell key,
         CellComparator comparator) {
+      // 二分查找，时间主要耗在了二分查找
       int entryIndex = binarySearchNonRootIndex(key, nonRootBlock, comparator);
 
       if (entryIndex != -1) {

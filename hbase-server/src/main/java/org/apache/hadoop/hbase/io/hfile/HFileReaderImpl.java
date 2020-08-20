@@ -312,6 +312,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
   }
 
   protected static class HFileScannerImpl implements HFileScanner {
+    // 具体读取的 Block 对应的 byte
     private ByteBuff blockBuffer;
     protected final boolean cacheBlocks;
     protected final boolean pread;
@@ -540,9 +541,12 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
       int klen, vlen, tlen = 0;
       int lastKeyValueSize = -1;
       int offsetFromPos;
+      // DataBlock 中结构：keyLength、ValueLength、Key、Value 。。。
+      // 所有的数据紧凑排列，这里 do while 循环按照有序查找
       do {
         offsetFromPos = 0;
         // Better to ensure that we use the BB Utils here
+        // 读取 kv 的 length
         long ll = blockBuffer.getLongAfterPosition(offsetFromPos);
         klen = (int)(ll >> Integer.SIZE);
         vlen = (int)(Bytes.MASK_FOR_LOWER_INT_IN_LONG ^ ll);
@@ -555,6 +559,9 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
         }
         offsetFromPos += Bytes.SIZEOF_LONG;
         blockBuffer.asSubByteBuffer(blockBuffer.position() + offsetFromPos, klen, pair);
+        // 保存 Block 中当前 key 的相关信息到 bufBackedKeyOnlyKv，
+        // 并与要查找的 key 进行比较，comp = 0 表示找到了要查找的数据，
+        // < 0 表示找到的数据比要查找的 key 要大，说明要找的 key 不存在
         bufBackedKeyOnlyKv.setKey(pair.getFirst(), pair.getSecond(), klen);
         int comp =
             PrivateCellUtil.compareKeyIgnoresMvcc(reader.getComparator(), key, bufBackedKeyOnlyKv);
@@ -668,6 +675,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
      * @param rewind whether to rewind to the first key of the block before
      *        doing the seek. If this is false, we are assuming we never go
      *        back, otherwise the result is undefined.
+     *     rewind 为 true，表示 seek 到当前 Block 的第一个 key
      * @return -1 if the key is earlier than the first key of the file,
      *         0 if we are at the given key, 1 if we are past the given key
      *         -2 if the key is earlier than the first key of the file while
@@ -675,12 +683,14 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
      */
     public int seekTo(Cell key, boolean rewind) throws IOException {
       HFileBlockIndex.BlockIndexReader indexReader = reader.getDataBlockIndexReader();
+      // 去 File 中读取 key 对应的 HFileBlock 和 Scan 相关的信息（HFile 中下一个 Block 的 firstKey）
       BlockWithScanInfo blockWithScanInfo = indexReader.loadDataBlockWithScanInfo(key, curBlock,
           cacheBlocks, pread, isCompaction, getEffectiveDataBlockEncoding(), reader);
       if (blockWithScanInfo == null || blockWithScanInfo.getHFileBlock() == null) {
         // This happens if the key e.g. falls before the beginning of the file.
         return -1;
       }
+      // 读取到 Block 以后，进行 seek 操作
       return loadBlockAndSeekToKey(blockWithScanInfo.getHFileBlock(),
         blockWithScanInfo.getNextIndexedKey(), rewind, key, false);
     }
@@ -747,6 +757,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
       }
       HFileBlock block = this.curBlock;
       do {
+        //
         if (block.getOffset() >= lastDataBlockOffset) {
           releaseIfNotCurBlock(block);
           return null;
@@ -757,6 +768,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
         }
         // We are reading the next block without block type validation, because
         // it might turn out to be a non-data block.
+        // 这里没有传入 block type，因为 next 可能是非数据块。因为 Block 中间夹着一些 Leaf Index Block
         block = reader.readBlock(block.getOffset() + block.getOnDiskSizeWithHeader(),
           block.getNextBlockOnDiskSize(), cacheBlocks, pread, isCompaction, true, null,
           getEffectiveDataBlockEncoding());
@@ -901,6 +913,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
 
     private final boolean _next() throws IOException {
       // Small method so can be inlined. It is a hot one.
+      // 当前 Block 读完了，读下一个 Block
       if (blockBuffer.remaining() <= 0) {
         return positionForNextBlock();
       }
@@ -971,6 +984,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
 
     protected int loadBlockAndSeekToKey(HFileBlock seekToBlock, Cell nextIndexedKey, boolean rewind,
         Cell key, boolean seekBefore) throws IOException {
+      // HFileBlock#offset 表示当前 Block 在 HFile 中的 offset，可以用来标识不同的 Block
       if (this.curBlock == null || this.curBlock.getOffset() != seekToBlock.getOffset()) {
         updateCurrentBlock(seekToBlock);
       } else if (rewind) {
@@ -1114,6 +1128,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
     // Check cache for block. If found return.
     BlockCache cache = cacheConf.getBlockCache().orElse(null);
     if (cache != null) {
+      // 从 BlockCache 中获取 Block
       HFileBlock cachedBlock =
           (HFileBlock) cache.getBlock(cacheKey, cacheBlock, useLock, updateCacheMetrics);
       if (cachedBlock != null) {
@@ -1284,12 +1299,14 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
     try (TraceScope traceScope = TraceUtil.createTrace("HFileReaderImpl.readBlock")) {
       while (true) {
         // Check cache for block. If found return.
+        // 判断是否从 BlockCache 中获取 Block，如果 DataBlock 配置的不进 Cache，则不查 Cache
         if (cacheConf.shouldReadBlockFromCache(expectedBlockType)) {
           if (useLock) {
             lockEntry = offsetLock.getLockEntry(dataBlockOffset);
           }
           // Try and get the block from the block cache. If the useLock variable is true then this
           // is the second time through the loop and it should not be counted as a block cache miss.
+          // 从 BlockCache 中获取 Block
           HFileBlock cachedBlock = getCachedBlock(cacheKey, cacheBlock, useLock, isCompaction,
             updateCacheMetrics, expectedBlockType, expectedDataBlockEncoding);
           if (cachedBlock != null) {
@@ -1321,6 +1338,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
           if (!useLock && cacheBlock && cacheConf.shouldLockOnCacheMiss(expectedBlockType)) {
             // check cache again with lock
             useLock = true;
+            // 如果 Cache 没有命中，执行 continue 是不是会从 BlockCache 中读两遍数据呢？
             continue;
           }
           // Carry on, please load.
@@ -1328,6 +1346,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
 
         TraceUtil.addTimelineAnnotation("blockCacheMiss");
         // Load block from filesystem.
+        // 从磁盘 load 数据
         HFileBlock hfileBlock = fsBlockReader.readBlockData(dataBlockOffset, onDiskBlockSize, pread,
           !isCompaction, shouldUseHeap(expectedBlockType));
         validateBlockType(hfileBlock, expectedBlockType);

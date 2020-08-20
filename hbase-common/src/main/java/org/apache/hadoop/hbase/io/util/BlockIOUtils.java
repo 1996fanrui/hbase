@@ -211,6 +211,7 @@ public final class BlockIOUtils {
     byte[] buf = new byte[remain];
     int bytesRead = 0;
     while (bytesRead < necessaryLen) {
+      // 读数据
       int ret = dis.read(position + bytesRead, buf, bytesRead, remain);
       if (ret < 0) {
         throw new IOException("Premature EOF from inputStream (positional read returned " + ret

@@ -207,12 +207,20 @@ public class StoreFileScanner implements KeyValueScanner {
     return retKey;
   }
 
+  /**
+   * StoreFile 的 seek 主流程
+   * @param key seek value
+   * @return seek 完成后， Scanner 还有数据则返回 true，
+   *          seek 完成后， Scanner 没有数据则返回 false
+   * @throws IOException
+   */
   @Override
   public boolean seek(Cell key) throws IOException {
     if (seekCount != null) seekCount.increment();
 
     try {
       try {
+        // HFileScanner 去 seek
         if(!seekAtOrAfter(hfs, key)) {
           this.cur = null;
           return false;
@@ -487,6 +495,7 @@ public class StoreFileScanner implements KeyValueScanner {
     if (timeRange == null) {
       timeRange = scan.getTimeRange();
     }
+    // TimeRange、BloomFilter、KeyRange 三层过滤
     return reader.passesTimerangeFilter(timeRange, oldestUnexpiredTS) && reader
         .passesKeyRangeFilter(scan) && reader.passesBloomFilter(scan, scan.getFamilyMap().get(cf));
   }

@@ -1528,6 +1528,7 @@ public class HFileBlock implements Cacheable {
       } else {
         // Positional read. Better for random reads; or when the streamLock is already locked.
         int extraSize = peekIntoNextBlock ? hdrSize : 0;
+        // 指定位置读
         if (!BlockIOUtils.preadWithExtra(dest, istream, fileOffset, size, extraSize)) {
           // did not read the next block header.
           return false;
@@ -1559,7 +1560,7 @@ public class HFileBlock implements Cacheable {
       // guaranteed to use hdfs checksum verification.
       boolean doVerificationThruHBaseChecksum = streamWrapper.shouldUseHBaseChecksum();
       FSDataInputStream is = streamWrapper.getStream(doVerificationThruHBaseChecksum);
-
+      // 读 DataBlock，主要这里耗时
       HFileBlock blk = readBlockDataInternal(is, offset, onDiskSizeWithHeaderL, pread,
         doVerificationThruHBaseChecksum, updateMetrics, intoHeap);
       if (blk == null) {
@@ -1752,6 +1753,7 @@ public class HFileBlock implements Cacheable {
         if (headerBuf != null) {
           onDiskBlock.put(0, headerBuf, 0, hdrSize).position(hdrSize);
         }
+        // 读数据
         boolean readNextHeader = readAtOffset(is, onDiskBlock,
           onDiskSizeWithHeader - preReadHeaderSize, true, offset + preReadHeaderSize, pread);
         onDiskBlock.rewind(); // in case of moving position when copying a cached header
@@ -1762,9 +1764,11 @@ public class HFileBlock implements Cacheable {
         }
         // Do a few checks before we go instantiate HFileBlock.
         assert onDiskSizeWithHeader > this.hdrSize;
+        // 验证 Header 长度
         verifyOnDiskSizeMatchesHeader(onDiskSizeWithHeader, headerBuf, offset, checksumSupport);
         ByteBuff curBlock = onDiskBlock.duplicate().position(0).limit(onDiskSizeWithHeader);
         // Verify checksum of the data before using it for building HFileBlock.
+        // Crc 数据校验
         if (verifyChecksum && !validateChecksum(offset, curBlock, hdrSize)) {
           return null;
         }
