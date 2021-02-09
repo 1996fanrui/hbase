@@ -1528,7 +1528,7 @@ public class HFileBlock implements Cacheable {
       } else {
         // Positional read. Better for random reads; or when the streamLock is already locked.
         int extraSize = peekIntoNextBlock ? hdrSize : 0;
-        // 指定位置读
+        // 指定 HFile 的 offset 读，将数据读取到 dest 中。istream 表示指定 HFile 的 FSDataInputStream
         if (!BlockIOUtils.preadWithExtra(dest, istream, fileOffset, size, extraSize)) {
           // did not read the next block header.
           return false;
@@ -1559,6 +1559,7 @@ public class HFileBlock implements Cacheable {
       // to skip hbase checksum verification then we are
       // guaranteed to use hdfs checksum verification.
       boolean doVerificationThruHBaseChecksum = streamWrapper.shouldUseHBaseChecksum();
+      // 这里 is 和 streamWrapper 对应的是一个 HFile 的文件流，也就是对应 hdfs 上的一个文件流
       FSDataInputStream is = streamWrapper.getStream(doVerificationThruHBaseChecksum);
       // 读 DataBlock，主要这里耗时
       HFileBlock blk = readBlockDataInternal(is, offset, onDiskSizeWithHeaderL, pread,
